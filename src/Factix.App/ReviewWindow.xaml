@@ -1,0 +1,65 @@
+<Window x:Class="FactixPrinter.ReviewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Revisar factura"
+        Width="1180"
+        Height="760"
+        MinWidth="980"
+        MinHeight="620"
+        WindowStartupLocation="CenterOwner">
+    <DockPanel Margin="20">
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0" LastChildFill="False">
+            <TextBlock x:Name="WarningText" VerticalAlignment="Center" TextWrapping="Wrap" Foreground="#8A5A12" Margin="0,0,16,0" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" DockPanel.Dock="Right">
+                <Button Content="Agregar partida" Click="AddLine_Click" />
+                <Button Content="Quitar partida" Click="RemoveLine_Click" />
+                <Button Content="Guardar PDF" Style="{StaticResource AccentButton}" Click="Save_Click" />
+                <Button Content="Imprimir" Click="Print_Click" />
+            </StackPanel>
+        </DockPanel>
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="460" />
+            </Grid.ColumnDefinitions>
+            <Border Grid.Column="0" Background="White" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Margin="0,0,16,0">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="PreviewHost" Margin="16" />
+                </ScrollViewer>
+            </Border>
+            <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <TextBlock Text="Campos" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12" />
+                    <TextBlock Text="Folio" Foreground="{StaticResource MutedBrush}" />
+                    <TextBox x:Name="FolioBox" />
+                    <TextBlock Text="Fecha" Foreground="{StaticResource MutedBrush}" />
+                    <TextBox x:Name="FechaBox" />
+                    <TextBlock Text="Emisor" Foreground="{StaticResource MutedBrush}" />
+                    <TextBox x:Name="EmisorBox" />
+                    <TextBlock Text="RFC emisor" Foreground="{StaticResource MutedBrush}" />
+                    <TextBox x:Name="RfcEmisorBox" />
+                    <TextBlock Text="Receptor" Foreground="{StaticResource MutedBrush}" />
+                    <TextBox x:Name="ReceptorBox" />
+                    <TextBlock Text="RFC receptor" Foreground="{StaticResource MutedBrush}" />
+                    <TextBox x:Name="RfcReceptorBox" />
+                    <TextBlock Text="Partidas" FontWeight="SemiBold" Margin="0,6,0,8" />
+                    <DataGrid x:Name="LinesGrid" AutoGenerateColumns="False" CanUserAddRows="False" Height="180"
+                              HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Descripción" Binding="{Binding Descripcion, UpdateSourceTrigger=PropertyChanged}" Width="*" />
+                            <DataGridTextColumn Header="Cantidad" Binding="{Binding Cantidad, UpdateSourceTrigger=PropertyChanged}" Width="70" />
+                            <DataGridTextColumn Header="Precio" Binding="{Binding PrecioUnitario, UpdateSourceTrigger=PropertyChanged}" Width="80" />
+                            <DataGridTextColumn Header="Importe" Binding="{Binding Importe, UpdateSourceTrigger=PropertyChanged}" Width="80" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <TextBlock Text="Subtotal" Margin="0,12,0,0" Foreground="{StaticResource MutedBrush}" />
+                    <TextBox x:Name="SubtotalBox" />
+                    <TextBlock Text="Impuestos" Foreground="{StaticResource MutedBrush}" />
+                    <TextBox x:Name="ImpuestosBox" />
+                    <TextBlock Text="Total" Foreground="{StaticResource MutedBrush}" />
+                    <TextBox x:Name="TotalBox" />
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </DockPanel>
+</Window>

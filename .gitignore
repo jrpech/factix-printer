@@ -1,0 +1,14 @@
+bin/
+obj/
+artifacts/
+.vs/
+*.user
+*.suo
+src/Factix.PrintProcessor/*.dll
+src/Factix.PrintProcessor/*.exp
+src/Factix.PrintProcessor/*.lib
+src/Factix.PrintProcessor/*.obj
+src/Factix.PrintProcessor/*.pdb
+src/Factix.PrintProcessor/x64/
+src/Factix.PrintProcessor/Debug/
+src/Factix.PrintProcessor/Release/

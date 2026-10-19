@@ -1,0 +1,7 @@
+EXPORTS
+    EnumPrintProcessorDatatypesW
+    OpenPrintProcessor
+    PrintDocumentOnPrintProcessor
+    ClosePrintProcessor
+    ControlPrintProcessor
+    GetPrintProcessorCapabilities
