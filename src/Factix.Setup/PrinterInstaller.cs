@@ -8,7 +8,6 @@ using Microsoft.Win32;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.ServiceProcess;
-using System.Text;
 using System.Threading;
 using Factix;
 
@@ -17,30 +16,34 @@ namespace FactixSetup
     internal static class PrinterInstaller
     {
         private const int PrinterAllAccess = 0x000F000C;
-        private const int ServerAllAccess = 0x000F0003;
         private const uint PrinterAttributeLocal = 0x00000040;
         private const string ProcessorRegPath = @"SYSTEM\CurrentControlSet\Control\Print\Environments\Windows x64\Print Processors\" + FactixPaths.ProcessorName;
+        private const string MonitorRegPath = @"SYSTEM\CurrentControlSet\Control\Print\Monitors\" + FactixPaths.MonitorName;
 
         public static void Install()
         {
             Ensure64Bit();
             var source = FindProcessorDll();
             EnsureDllIs64Bit(source);
-            var destination = ProcessorPath();
+            var processor = ProcessorPath();
+            var monitor = MonitorDllPath();
             RestartSpooler(delegate
             {
-                CopyDll(source, destination);
+                CopyDll(source, processor);
+                CopyDll(source, monitor);
                 RegisterProcessor();
+                RegisterMonitor();
             });
-            EnsureProcessorRegistered();
+            EnsurePortListed();
             RemovePrinterIfPresent();
             var driver = ChooseInstalledDriver();
-            EnsureNulPort();
-            AddFactixPrinter(driver, PrinterDriverSelection.DatatypeFor(driver));
+            AddFactixPrinter(driver);
             EnsureJobsDirectory();
             Console.WriteLine("Impresora Factix instalada con el driver " + driver + ".");
-            Console.WriteLine("Procesador: " + destination);
+            Console.WriteLine("Puerto: " + FactixPaths.PortName);
+            Console.WriteLine("Monitor: " + monitor);
             Console.WriteLine("Los trabajos se guardan en " + FactixPaths.JobsDirectory);
+            Console.WriteLine("Imprime a la impresora Factix. El botón Factura de ejemplo no pasa por la impresora.");
             Console.WriteLine("Para distribuir factixpp.dll, fírmala con Authenticode.");
         }
 
@@ -51,11 +54,11 @@ namespace FactixSetup
             RestartSpooler(delegate
             {
                 UnregisterProcessor();
-                var path = ProcessorPath();
+                UnregisterMonitor();
                 using (new FileSystemNative())
                 {
-                    if (File.Exists(path))
-                        File.Delete(path);
+                    DeleteIfExists(ProcessorPath());
+                    DeleteIfExists(MonitorDllPath());
                 }
             });
             Console.WriteLine("Impresora Factix quitada. Los trabajos en " + FactixPaths.JobsDirectory + " se conservan.");
@@ -84,12 +87,26 @@ namespace FactixSetup
             throw new FileNotFoundException("No se encontró factixpp.dll. Compílalo con src\\Factix.PrintProcessor\\build.bat y cópialo junto a Factix.Setup.exe.");
         }
 
-        private static string ProcessorPath()
+        private static string WindowsRoot()
         {
             var windows = Environment.GetEnvironmentVariable("SystemRoot");
-            if (string.IsNullOrEmpty(windows))
-                windows = @"C:\Windows";
-            return Path.Combine(windows, "System32", "spool", "prtprocs", "x64", FactixPaths.ProcessorFileName);
+            return string.IsNullOrEmpty(windows) ? @"C:\Windows" : windows;
+        }
+
+        private static string ProcessorPath()
+        {
+            return Path.Combine(WindowsRoot(), "System32", "spool", "prtprocs", "x64", FactixPaths.ProcessorFileName);
+        }
+
+        private static string MonitorDllPath()
+        {
+            return Path.Combine(WindowsRoot(), "System32", FactixPaths.ProcessorFileName);
+        }
+
+        private static void DeleteIfExists(string path)
+        {
+            if (File.Exists(path))
+                File.Delete(path);
         }
 
         private static void CopyDll(string source, string destination)
@@ -140,6 +157,70 @@ namespace FactixSetup
             }
             catch (ArgumentException)
             {
+            }
+        }
+
+        private static void RegisterMonitor()
+        {
+            using (var key = Registry.LocalMachine.CreateSubKey(MonitorRegPath))
+            {
+                if (key == null)
+                    throw new InvalidOperationException("No se pudo registrar el monitor de puerto.");
+                key.SetValue("Driver", FactixPaths.ProcessorFileName, RegistryValueKind.String);
+            }
+        }
+
+        private static void UnregisterMonitor()
+        {
+            try
+            {
+                Registry.LocalMachine.DeleteSubKeyTree(MonitorRegPath, false);
+            }
+            catch (ArgumentException)
+            {
+            }
+        }
+
+        private static void EnsurePortListed()
+        {
+            for (var attempt = 0; attempt < 10; attempt++)
+            {
+                if (PortIsListed())
+                    return;
+                Thread.Sleep(500);
+            }
+
+            throw new InvalidOperationException(
+                "El puerto " + FactixPaths.PortName + " no aparece. El monitor no cargó desde " + MonitorDllPath() + ".");
+        }
+
+        private static bool PortIsListed()
+        {
+            uint needed;
+            uint returned;
+            EnumPorts(null, 1, IntPtr.Zero, 0, out needed, out returned);
+            if (needed == 0)
+                return false;
+
+            var buffer = Marshal.AllocHGlobal((int)needed);
+            try
+            {
+                if (!EnumPorts(null, 1, buffer, needed, out needed, out returned))
+                    return false;
+                var stride = IntPtr.Size;
+                for (var i = 0; i < returned; i++)
+                {
+                    var namePtr = Marshal.ReadIntPtr(buffer, i * stride);
+                    var name = Marshal.PtrToStringUni(namePtr);
+                    if (string.Equals(name, FactixPaths.PortName, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+
+                return false;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
             }
         }
 
@@ -255,37 +336,15 @@ namespace FactixSetup
             }
         }
 
-        private static void EnsureNulPort()
-        {
-            var defaults = new PrinterDefaults { DesiredAccess = ServerAllAccess };
-            if (!OpenPrinterWithDefaults(",XcvMonitor Local Port", out var handle, ref defaults))
-                return;
-
-            var bytes = Encoding.Unicode.GetBytes("NUL:\0");
-            var input = Marshal.AllocHGlobal(bytes.Length);
-            try
-            {
-                Marshal.Copy(bytes, 0, input, bytes.Length);
-                uint needed;
-                uint status;
-                XcvData(handle, "AddPort", input, (uint)bytes.Length, IntPtr.Zero, 0, out needed, out status);
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(input);
-                ClosePrinter(handle);
-            }
-        }
-
-        private static void AddFactixPrinter(string driver, string datatype)
+        private static void AddFactixPrinter(string driver)
         {
             var info = new PrinterInfo2
             {
                 pPrinterName = FactixPaths.PrinterName,
-                pPortName = "NUL:",
+                pPortName = FactixPaths.PortName,
                 pDriverName = driver,
-                pPrintProcessor = FactixPaths.ProcessorName,
-                pDatatype = datatype,
+                pPrintProcessor = "winprint",
+                pDatatype = "RAW",
                 pComment = "Impresora virtual de Factix",
                 Attributes = PrinterAttributeLocal,
                 Priority = 1,
@@ -388,7 +447,7 @@ namespace FactixSetup
             }
         }
 
-        [DllImport("winspool.drv", EntryPoint = "XcvDataW", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern bool XcvData(IntPtr hXcv, string pszDataName, IntPtr pInputData, uint cbInputData, IntPtr pOutputData, uint cbOutputData, out uint pcbOutputNeeded, out uint pdwStatus);
+        [DllImport("winspool.drv", EntryPoint = "EnumPortsW", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool EnumPorts(string? pName, uint level, IntPtr pPorts, uint cbBuf, out uint pcbNeeded, out uint pcReturned);
     }
 }

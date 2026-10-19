@@ -140,6 +140,37 @@ public class FactixTests
         Assert.Equal(2026, job.CreatedUtc.Year);
     }
 
+    [Fact]
+    public void PostScript_del_puerto_se_lee_como_factura()
+    {
+        var ps = Encoding.ASCII.GetBytes(
+            "%!PS-Adobe-3.0\n" +
+            "%%BoundingBox: 0 0 612 792\n" +
+            "/F0 12 Tf\n" +
+            "40 700 moveto (FACTURA) show\n" +
+            "40 640 moveto (Folio) show\n" +
+            "160 640 moveto (A-100) show\n" +
+            "40 500 moveto (Total) show\n" +
+            "160 500 moveto (441.38) show\n");
+        var result = InvoiceExtractor.Extract(TextNormalizer.ReadBytes(ps));
+
+        Assert.True(result.Recognized);
+        Assert.Equal("A-100", result.Draft.Folio);
+        Assert.Equal("441.38", result.Draft.Total);
+    }
+
+    [Fact]
+    public void Texto_en_la_misma_linea_separa_etiqueta_y_valor()
+    {
+        var text = Encoding.ASCII.GetBytes("FACTURA\nFolio A-100\nFecha 2026-03-15\nTotal 10.00\n");
+        var result = InvoiceExtractor.Extract(TextNormalizer.ReadBytes(text));
+
+        Assert.True(result.Recognized);
+        Assert.Equal("A-100", result.Draft.Folio);
+        Assert.Equal("2026-03-15", result.Draft.Fecha);
+        Assert.Equal("10.00", result.Draft.Total);
+    }
+
     private static byte[] TinyXps(params (string Text, double X, double Y, double Size)[] glyphs)
     {
         var page = new StringBuilder();

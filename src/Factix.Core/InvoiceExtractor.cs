@@ -47,7 +47,7 @@ namespace Factix
 
         public static bool MatchesSimpleInvoice(IReadOnlyList<TextRun> runs)
         {
-            return HasExact(runs, "factura") && HasExact(runs, "total");
+            return HasToken(runs, "factura") && HasToken(runs, "total");
         }
 
         private static ExtractionResult UnrecognizedResult()
@@ -73,6 +73,12 @@ namespace Factix
                     continue;
 
                 used.Add(index);
+                if (TryInline(runs[index].Text, label, out var inline))
+                {
+                    SetField(draft, field, inline);
+                    return;
+                }
+
                 var valueIndex = FindValue(runs, used, runs[index]);
                 if (valueIndex < 0)
                     break;
@@ -89,15 +95,45 @@ namespace Factix
         private static int FindLabel(List<TextRun> runs, HashSet<int> used, string label)
         {
             var target = Fold(label);
+            var prefix = -1;
             for (var i = 0; i < runs.Count; i++)
             {
                 if (used.Contains(i))
                     continue;
-                if (Fold(runs[i].Text) == target)
+                var folded = Fold(runs[i].Text);
+                if (folded == target)
                     return i;
+                if (prefix < 0 && folded.StartsWith(target + " ", StringComparison.Ordinal))
+                    prefix = i;
             }
 
-            return -1;
+            return prefix;
+        }
+
+        private static bool TryInline(string text, string label, out string value)
+        {
+            var words = text.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            var labelWords = label.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            value = "";
+            if (words.Length <= labelWords.Length)
+                return false;
+
+            for (var i = 0; i < labelWords.Length; i++)
+            {
+                if (Fold(words[i]) != Fold(labelWords[i]))
+                    return false;
+            }
+
+            var rest = new StringBuilder();
+            for (var i = labelWords.Length; i < words.Length; i++)
+            {
+                if (rest.Length > 0)
+                    rest.Append(' ');
+                rest.Append(words[i]);
+            }
+
+            value = rest.ToString().Trim().TrimStart(':').Trim();
+            return value.Length > 0;
         }
 
         private static int FindValue(List<TextRun> runs, HashSet<int> used, TextRun label)
@@ -318,11 +354,12 @@ namespace Factix
             return string.IsNullOrEmpty(current) ? addition : current + " " + addition;
         }
 
-        private static bool HasExact(IReadOnlyList<TextRun> runs, string folded)
+        private static bool HasToken(IReadOnlyList<TextRun> runs, string folded)
         {
             foreach (var run in runs)
             {
-                if (Fold(run.Text) == folded)
+                var text = Fold(run.Text);
+                if (text == folded || text.StartsWith(folded + " ", StringComparison.Ordinal))
                     return true;
             }
 

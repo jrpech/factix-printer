@@ -344,7 +344,7 @@ static void AppendEscaped(char* dest, size_t cap, size_t* used, const WCHAR* val
     HeapFree(GetProcessHeap(), 0, utf8);
 }
 
-static BOOL WriteJobJson(const WCHAR* folder, const WCHAR* id, const PROCESSOR* processor)
+static BOOL WriteJobJson(const WCHAR* folder, const WCHAR* id, const WCHAR* documentName, const WCHAR* datatype)
 {
     char json[4096];
     size_t used = 0;
@@ -362,9 +362,9 @@ static BOOL WriteJobJson(const WCHAR* folder, const WCHAR* id, const PROCESSOR* 
     JsonAppend(json, sizeof(json), &used, "{\"id\":");
     AppendEscaped(json, sizeof(json), &used, id);
     JsonAppend(json, sizeof(json), &used, ",\"documentName\":");
-    AppendEscaped(json, sizeof(json), &used, processor->documentName);
+    AppendEscaped(json, sizeof(json), &used, documentName);
     JsonAppend(json, sizeof(json), &used, ",\"datatype\":");
-    AppendEscaped(json, sizeof(json), &used, processor->datatype);
+    AppendEscaped(json, sizeof(json), &used, datatype);
     JsonAppend(json, sizeof(json), &used, ",\"file\":\"spool.spl\",\"createdUtc\":\"");
     JsonAppend(json, sizeof(json), &used, created);
     JsonAppend(json, sizeof(json), &used, "\"}");
@@ -437,7 +437,6 @@ static BOOL CaptureJob(PROCESSOR* processor)
     int attempt;
     LARGE_INTEGER size;
     HANDLE captured;
-    HANDLE heldSpool;
     BOOL copied = FALSE;
 
     if (CoCreateGuid(&guid) != S_OK)
@@ -476,7 +475,6 @@ static BOOL CaptureJob(PROCESSOR* processor)
 
     _snwprintf(target, MAX_PATH, L"%s\\spool.spl", folder);
     target[MAX_PATH - 1] = 0;
-    heldSpool = AcquireSpoolHandle(processor->printerName);
     if (!GetSpoolDirectory(processor->printerName, spoolDir, MAX_PATH))
         CopyText(spoolDir, MAX_PATH, L"C:\\Windows\\System32\\spool\\PRINTERS");
 
@@ -503,22 +501,22 @@ static BOOL CaptureJob(PROCESSOR* processor)
 
     if (processor->cancelled || !copied || size.QuadPart <= 0)
     {
-        LogLine(L"No se pudo copiar el trabajo de impresión.");
+        WCHAR line[512];
+        _snwprintf(line, 512, L"No se pudo copiar el trabajo %lu desde %s (error %lu).", processor->jobId, spoolDir, GetLastError());
+        line[511] = 0;
+        LogLine(line);
         DeleteTree(folder);
-        ReleaseSpoolHandle(heldSpool);
         return FALSE;
     }
 
-    if (!WriteJobJson(folder, guidText, processor))
+    if (!WriteJobJson(folder, guidText, processor->documentName, processor->datatype))
     {
         LogLine(L"No se pudo escribir job.json.");
         DeleteTree(folder);
-        ReleaseSpoolHandle(heldSpool);
         return FALSE;
     }
 
-    ReleaseSpoolHandle(heldSpool);
-    LogLine(L"Trabajo capturado.");
+    LogLine(L"Trabajo capturado por el procesador.");
     return TRUE;
 }
 
@@ -650,4 +648,510 @@ extern "C" DWORD WINAPI GetPrintProcessorCapabilities(
     if (pcbNeeded)
         *pcbNeeded = 0;
     return ERROR_SUCCESS;
+}
+
+#define kPortSignature 0x46545031
+
+typedef struct _FACTIX_PORT
+{
+    DWORD signature;
+    WCHAR name[64];
+    WCHAR document[512];
+    WCHAR folder[MAX_PATH];
+    WCHAR id[64];
+    HANDLE file;
+    DWORD bytes;
+    BOOL started;
+} FACTIX_PORT;
+
+typedef struct _FACTIX_PORT_INFO_1
+{
+    LPWSTR pName;
+} FACTIX_PORT_INFO_1;
+
+typedef struct _FACTIX_PORT_INFO_2
+{
+    LPWSTR pPortName;
+    LPWSTR pMonitorName;
+    LPWSTR pDescription;
+    DWORD fPortType;
+    DWORD Reserved;
+} FACTIX_PORT_INFO_2;
+
+typedef struct _FACTIX_DOC_INFO
+{
+    LPWSTR pDocName;
+    LPWSTR pOutputFile;
+    LPWSTR pDatatype;
+} FACTIX_DOC_INFO;
+
+typedef struct _FACTIX_MONITOR2
+{
+    DWORD cbSize;
+    BOOL (WINAPI *pfnEnumPorts)(HANDLE, LPWSTR, DWORD, LPBYTE, DWORD, LPDWORD, LPDWORD);
+    BOOL (WINAPI *pfnOpenPort)(HANDLE, LPWSTR, PHANDLE);
+    BOOL (WINAPI *pfnOpenPortEx)(HANDLE, HANDLE, LPWSTR, LPWSTR, PHANDLE, struct _FACTIX_MONITOR2*);
+    BOOL (WINAPI *pfnStartDocPort)(HANDLE, LPWSTR, DWORD, DWORD, LPBYTE);
+    BOOL (WINAPI *pfnWritePort)(HANDLE, LPBYTE, DWORD, LPDWORD);
+    BOOL (WINAPI *pfnReadPort)(HANDLE, LPBYTE, DWORD, LPDWORD);
+    BOOL (WINAPI *pfnEndDocPort)(HANDLE);
+    BOOL (WINAPI *pfnClosePort)(HANDLE);
+    BOOL (WINAPI *pfnAddPort)(HANDLE, LPWSTR, HWND, LPWSTR);
+    BOOL (WINAPI *pfnAddPortEx)(HANDLE, LPWSTR, DWORD, LPBYTE, LPWSTR);
+    BOOL (WINAPI *pfnConfigurePort)(HANDLE, LPWSTR, HWND, LPWSTR);
+    BOOL (WINAPI *pfnDeletePort)(HANDLE, LPWSTR, HWND, LPWSTR);
+    BOOL (WINAPI *pfnGetPrinterDataFromPort)(HANDLE, DWORD, LPWSTR, LPWSTR, DWORD, LPWSTR, DWORD, LPDWORD);
+    BOOL (WINAPI *pfnSetPortTimeOuts)(HANDLE, void*, DWORD);
+    BOOL (WINAPI *pfnXcvOpenPort)(HANDLE, LPCWSTR, DWORD, PHANDLE);
+    DWORD (WINAPI *pfnXcvDataPort)(HANDLE, LPCWSTR, PBYTE, DWORD, PBYTE, DWORD, PDWORD);
+    BOOL (WINAPI *pfnXcvClosePort)(HANDLE);
+    VOID (WINAPI *pfnShutdown)(HANDLE);
+    DWORD (WINAPI *pfnSendRecvBidiDataFromPort)(HANDLE, DWORD, LPCWSTR, void*, void**);
+    DWORD (WINAPI *pfnNotifyUsedPorts)(HANDLE, DWORD, const WCHAR**);
+    DWORD (WINAPI *pfnNotifyUnusedPorts)(HANDLE, DWORD, const WCHAR**);
+} FACTIX_MONITOR2;
+
+static const WCHAR kFactixPort[] = L"Factix:";
+static const WCHAR kFactixMonitor[] = L"Factix Port";
+static const WCHAR kFactixPortDescription[] = L"Puerto virtual de Factix";
+
+static FACTIX_PORT* PortFromHandle(HANDLE handle)
+{
+    FACTIX_PORT* port = (FACTIX_PORT*)handle;
+    if (!port || port->signature != kPortSignature)
+        return NULL;
+    return port;
+}
+
+static BOOL MakeJobFolder(WCHAR* folder, size_t folderChars, WCHAR* id, size_t idChars)
+{
+    WCHAR jobs[MAX_PATH];
+    GUID guid;
+
+    if (CoCreateGuid(&guid) != S_OK)
+        _snwprintf(id, idChars, L"%08lX-%lu", GetTickCount(), GetCurrentThreadId());
+    else
+    {
+        _snwprintf(
+            id,
+            idChars,
+            L"%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+            guid.Data1,
+            guid.Data2,
+            guid.Data3,
+            guid.Data4[0],
+            guid.Data4[1],
+            guid.Data4[2],
+            guid.Data4[3],
+            guid.Data4[4],
+            guid.Data4[5],
+            guid.Data4[6],
+            guid.Data4[7]);
+    }
+    id[idChars - 1] = 0;
+    CreateJobsRoot(jobs, MAX_PATH);
+    _snwprintf(folder, folderChars, L"%s\\%s", jobs, id);
+    folder[folderChars - 1] = 0;
+    return CreateDirectoryW(folder, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+static WCHAR* PackString(WCHAR** cursor, const WCHAR* value)
+{
+    WCHAR* start = *cursor;
+    lstrcpyW(start, value);
+    *cursor += lstrlenW(value) + 1;
+    return start;
+}
+
+static BOOL WINAPI MonEnumPorts(
+    HANDLE hMonitor,
+    LPWSTR pName,
+    DWORD Level,
+    LPBYTE pPorts,
+    DWORD cbBuf,
+    LPDWORD pcbNeeded,
+    LPDWORD pcReturned)
+{
+    DWORD structSize;
+    DWORD extra;
+    WCHAR* strings;
+    UNREFERENCED_PARAMETER(hMonitor);
+    UNREFERENCED_PARAMETER(pName);
+
+    if (!pcbNeeded || !pcReturned)
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    if (Level == 1)
+        structSize = sizeof(FACTIX_PORT_INFO_1);
+    else if (Level == 2)
+        structSize = sizeof(FACTIX_PORT_INFO_2);
+    else
+    {
+        SetLastError(ERROR_INVALID_LEVEL);
+        return FALSE;
+    }
+
+    extra = (DWORD)((lstrlenW(kFactixPort) + 1) * sizeof(WCHAR));
+    if (Level == 2)
+    {
+        extra += (DWORD)((lstrlenW(kFactixMonitor) + 1) * sizeof(WCHAR));
+        extra += (DWORD)((lstrlenW(kFactixPortDescription) + 1) * sizeof(WCHAR));
+    }
+
+    *pcbNeeded = structSize + extra;
+    *pcReturned = 0;
+    if (!pPorts || cbBuf < *pcbNeeded)
+    {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+
+    strings = (WCHAR*)(pPorts + structSize);
+    if (Level == 1)
+        ((FACTIX_PORT_INFO_1*)pPorts)->pName = PackString(&strings, kFactixPort);
+    else
+    {
+        FACTIX_PORT_INFO_2* info = (FACTIX_PORT_INFO_2*)pPorts;
+        info->pPortName = PackString(&strings, kFactixPort);
+        info->pMonitorName = PackString(&strings, kFactixMonitor);
+        info->pDescription = PackString(&strings, kFactixPortDescription);
+        info->fPortType = 1;
+        info->Reserved = 0;
+    }
+
+    *pcReturned = 1;
+    return TRUE;
+}
+
+static BOOL WINAPI MonOpenPort(HANDLE hMonitor, LPWSTR pName, PHANDLE pHandle)
+{
+    FACTIX_PORT* port;
+    UNREFERENCED_PARAMETER(hMonitor);
+    if (!pName || !pHandle)
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (lstrcmpiW(pName, kFactixPort) != 0)
+    {
+        SetLastError(ERROR_UNKNOWN_PORT);
+        return FALSE;
+    }
+
+    port = (FACTIX_PORT*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(FACTIX_PORT));
+    if (!port)
+    {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return FALSE;
+    }
+    port->signature = kPortSignature;
+    port->file = INVALID_HANDLE_VALUE;
+    CopyText(port->name, 64, pName);
+    CopyText(port->document, 512, L"Trabajo de impresión");
+    *pHandle = port;
+    return TRUE;
+}
+
+static BOOL WINAPI MonOpenPortEx(
+    HANDLE hMonitor,
+    HANDLE hMonitorPort,
+    LPWSTR pPortName,
+    LPWSTR pPrinterName,
+    PHANDLE pHandle,
+    FACTIX_MONITOR2* pMonitor2)
+{
+    UNREFERENCED_PARAMETER(hMonitorPort);
+    UNREFERENCED_PARAMETER(pPrinterName);
+    UNREFERENCED_PARAMETER(pMonitor2);
+    return MonOpenPort(hMonitor, pPortName, pHandle);
+}
+
+static BOOL FinishPortJob(FACTIX_PORT* port)
+{
+    WCHAR path[MAX_PATH];
+    WCHAR line[320];
+
+    if (!port->started)
+        return TRUE;
+    port->started = FALSE;
+    if (port->file != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(port->file);
+        port->file = INVALID_HANDLE_VALUE;
+    }
+    if (port->bytes == 0)
+    {
+        LogLine(L"El puerto recibió un trabajo vacío.");
+        DeleteTree(port->folder);
+        return TRUE;
+    }
+    if (!WriteJobJson(port->folder, port->id, port->document, L"RAW"))
+    {
+        LogLine(L"No se pudo escribir job.json desde el puerto.");
+        DeleteTree(port->folder);
+        return FALSE;
+    }
+    _snwprintf(path, MAX_PATH, L"%s\\spool.spl", port->folder);
+    path[MAX_PATH - 1] = 0;
+    _snwprintf(line, 320, L"Trabajo capturado por el puerto (%lu bytes): %s", port->bytes, path);
+    line[319] = 0;
+    LogLine(line);
+    return TRUE;
+}
+
+static BOOL WINAPI MonStartDocPort(HANDLE hPort, LPWSTR pPrinterName, DWORD JobId, DWORD Level, LPBYTE pDocInfo)
+{
+    FACTIX_PORT* port = PortFromHandle(hPort);
+    WCHAR path[MAX_PATH];
+    UNREFERENCED_PARAMETER(pPrinterName);
+    UNREFERENCED_PARAMETER(JobId);
+    if (!port)
+    {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    if (port->started)
+        FinishPortJob(port);
+    if (!MakeJobFolder(port->folder, MAX_PATH, port->id, 64))
+    {
+        LogLine(L"No se pudo crear la carpeta del trabajo en el puerto.");
+        SetLastError(ERROR_PATH_NOT_FOUND);
+        return FALSE;
+    }
+    if (pDocInfo && Level >= 1 && ((FACTIX_DOC_INFO*)pDocInfo)->pDocName)
+        CopyText(port->document, 512, ((FACTIX_DOC_INFO*)pDocInfo)->pDocName);
+    _snwprintf(path, MAX_PATH, L"%s\\spool.spl", port->folder);
+    path[MAX_PATH - 1] = 0;
+    port->file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (port->file == INVALID_HANDLE_VALUE)
+    {
+        LogLine(L"No se pudo crear spool.spl en el puerto.");
+        DeleteTree(port->folder);
+        return FALSE;
+    }
+    port->bytes = 0;
+    port->started = TRUE;
+    return TRUE;
+}
+
+static BOOL WINAPI MonWritePort(HANDLE hPort, LPBYTE pBuffer, DWORD cbBuf, LPDWORD pcbWritten)
+{
+    FACTIX_PORT* port = PortFromHandle(hPort);
+    DWORD done = 0;
+    if (!port || !pcbWritten)
+    {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    if (!port->started || port->file == INVALID_HANDLE_VALUE)
+    {
+        *pcbWritten = cbBuf;
+        return TRUE;
+    }
+    while (done < cbBuf)
+    {
+        DWORD wrote = 0;
+        if (!WriteFile(port->file, pBuffer + done, cbBuf - done, &wrote, NULL) || wrote == 0)
+        {
+            *pcbWritten = done;
+            return FALSE;
+        }
+        done += wrote;
+    }
+    port->bytes += done;
+    *pcbWritten = done;
+    return TRUE;
+}
+
+static BOOL WINAPI MonReadPort(HANDLE hPort, LPBYTE pBuffer, DWORD cbBuffer, LPDWORD pcbRead)
+{
+    UNREFERENCED_PARAMETER(hPort);
+    UNREFERENCED_PARAMETER(pBuffer);
+    UNREFERENCED_PARAMETER(cbBuffer);
+    if (pcbRead)
+        *pcbRead = 0;
+    SetLastError(ERROR_INVALID_HANDLE);
+    return FALSE;
+}
+
+static BOOL WINAPI MonEndDocPort(HANDLE hPort)
+{
+    FACTIX_PORT* port = PortFromHandle(hPort);
+    if (!port)
+    {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    return FinishPortJob(port);
+}
+
+static BOOL WINAPI MonClosePort(HANDLE hPort)
+{
+    FACTIX_PORT* port = PortFromHandle(hPort);
+    if (!port)
+    {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    FinishPortJob(port);
+    port->signature = 0;
+    HeapFree(GetProcessHeap(), 0, port);
+    return TRUE;
+}
+
+static BOOL WINAPI MonAddPort(HANDLE hMonitor, LPWSTR pName, HWND hWnd, LPWSTR pMonitorName)
+{
+    UNREFERENCED_PARAMETER(hMonitor);
+    UNREFERENCED_PARAMETER(pName);
+    UNREFERENCED_PARAMETER(hWnd);
+    UNREFERENCED_PARAMETER(pMonitorName);
+    return TRUE;
+}
+
+static BOOL WINAPI MonAddPortEx(HANDLE hMonitor, LPWSTR pName, DWORD Level, LPBYTE lpBuffer, LPWSTR lpMonitorName)
+{
+    UNREFERENCED_PARAMETER(hMonitor);
+    UNREFERENCED_PARAMETER(pName);
+    UNREFERENCED_PARAMETER(Level);
+    UNREFERENCED_PARAMETER(lpBuffer);
+    UNREFERENCED_PARAMETER(lpMonitorName);
+    return TRUE;
+}
+
+static BOOL WINAPI MonConfigurePort(HANDLE hMonitor, LPWSTR pName, HWND hWnd, LPWSTR pPortName)
+{
+    UNREFERENCED_PARAMETER(hMonitor);
+    UNREFERENCED_PARAMETER(pName);
+    UNREFERENCED_PARAMETER(hWnd);
+    UNREFERENCED_PARAMETER(pPortName);
+    return TRUE;
+}
+
+static BOOL WINAPI MonDeletePort(HANDLE hMonitor, LPWSTR pName, HWND hWnd, LPWSTR pPortName)
+{
+    UNREFERENCED_PARAMETER(hMonitor);
+    UNREFERENCED_PARAMETER(pName);
+    UNREFERENCED_PARAMETER(hWnd);
+    UNREFERENCED_PARAMETER(pPortName);
+    return TRUE;
+}
+
+static BOOL WINAPI MonGetPrinterData(HANDLE hPort, DWORD ControlID, LPWSTR pValueName, LPWSTR lpInBuffer, DWORD cbInBuffer, LPWSTR lpOutBuffer, DWORD cbOutBuffer, LPDWORD lpcbReturned)
+{
+    UNREFERENCED_PARAMETER(hPort);
+    UNREFERENCED_PARAMETER(ControlID);
+    UNREFERENCED_PARAMETER(pValueName);
+    UNREFERENCED_PARAMETER(lpInBuffer);
+    UNREFERENCED_PARAMETER(cbInBuffer);
+    UNREFERENCED_PARAMETER(lpOutBuffer);
+    UNREFERENCED_PARAMETER(cbOutBuffer);
+    if (lpcbReturned)
+        *lpcbReturned = 0;
+    SetLastError(ERROR_INVALID_PARAMETER);
+    return FALSE;
+}
+
+static BOOL WINAPI MonSetTimeouts(HANDLE hPort, void* timeouts, DWORD reserved)
+{
+    UNREFERENCED_PARAMETER(hPort);
+    UNREFERENCED_PARAMETER(timeouts);
+    UNREFERENCED_PARAMETER(reserved);
+    return TRUE;
+}
+
+static BOOL WINAPI MonXcvOpen(HANDLE hMonitor, LPCWSTR pszObject, DWORD GrantedAccess, PHANDLE phXcv)
+{
+    UNREFERENCED_PARAMETER(pszObject);
+    UNREFERENCED_PARAMETER(GrantedAccess);
+    if (!phXcv)
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    *phXcv = hMonitor ? hMonitor : (HANDLE)1;
+    return TRUE;
+}
+
+static DWORD WINAPI MonXcvData(HANDLE hXcv, LPCWSTR pszDataName, PBYTE pInputData, DWORD cbInputData, PBYTE pOutputData, DWORD cbOutputData, PDWORD pcbOutputNeeded)
+{
+    UNREFERENCED_PARAMETER(hXcv);
+    UNREFERENCED_PARAMETER(pInputData);
+    UNREFERENCED_PARAMETER(cbInputData);
+    UNREFERENCED_PARAMETER(pOutputData);
+    UNREFERENCED_PARAMETER(cbOutputData);
+    if (pcbOutputNeeded)
+        *pcbOutputNeeded = 0;
+    if (!pszDataName)
+        return ERROR_INVALID_PARAMETER;
+    if (lstrcmpiW(pszDataName, L"AddPort") == 0 || lstrcmpiW(pszDataName, L"DeletePort") == 0)
+        return ERROR_SUCCESS;
+    return ERROR_INVALID_PARAMETER;
+}
+
+static BOOL WINAPI MonXcvClose(HANDLE hXcv)
+{
+    UNREFERENCED_PARAMETER(hXcv);
+    return TRUE;
+}
+
+static VOID WINAPI MonShutdown(HANDLE hMonitor)
+{
+    UNREFERENCED_PARAMETER(hMonitor);
+}
+
+static DWORD WINAPI MonBidi(HANDLE hPort, DWORD dwAccessBit, LPCWSTR pAction, void* pReqData, void** ppResData)
+{
+    UNREFERENCED_PARAMETER(hPort);
+    UNREFERENCED_PARAMETER(dwAccessBit);
+    UNREFERENCED_PARAMETER(pAction);
+    UNREFERENCED_PARAMETER(pReqData);
+    if (ppResData)
+        *ppResData = NULL;
+    return ERROR_NOT_SUPPORTED;
+}
+
+static DWORD WINAPI MonNotifyPorts(HANDLE hMonitor, DWORD cPorts, const WCHAR** ppszPorts)
+{
+    UNREFERENCED_PARAMETER(hMonitor);
+    UNREFERENCED_PARAMETER(cPorts);
+    UNREFERENCED_PARAMETER(ppszPorts);
+    return ERROR_SUCCESS;
+}
+
+static FACTIX_MONITOR2 gMonitor;
+
+extern "C" FACTIX_MONITOR2* WINAPI InitializePrintMonitor2(void* pMonitorInit, HANDLE* phMonitor)
+{
+    BOOL first = gMonitor.cbSize == 0;
+    UNREFERENCED_PARAMETER(pMonitorInit);
+    gMonitor.cbSize = sizeof(gMonitor);
+    gMonitor.pfnEnumPorts = MonEnumPorts;
+    gMonitor.pfnOpenPort = MonOpenPort;
+    gMonitor.pfnOpenPortEx = MonOpenPortEx;
+    gMonitor.pfnStartDocPort = MonStartDocPort;
+    gMonitor.pfnWritePort = MonWritePort;
+    gMonitor.pfnReadPort = MonReadPort;
+    gMonitor.pfnEndDocPort = MonEndDocPort;
+    gMonitor.pfnClosePort = MonClosePort;
+    gMonitor.pfnAddPort = MonAddPort;
+    gMonitor.pfnAddPortEx = MonAddPortEx;
+    gMonitor.pfnConfigurePort = MonConfigurePort;
+    gMonitor.pfnDeletePort = MonDeletePort;
+    gMonitor.pfnGetPrinterDataFromPort = MonGetPrinterData;
+    gMonitor.pfnSetPortTimeOuts = MonSetTimeouts;
+    gMonitor.pfnXcvOpenPort = MonXcvOpen;
+    gMonitor.pfnXcvDataPort = MonXcvData;
+    gMonitor.pfnXcvClosePort = MonXcvClose;
+    gMonitor.pfnShutdown = MonShutdown;
+    gMonitor.pfnSendRecvBidiDataFromPort = MonBidi;
+    gMonitor.pfnNotifyUsedPorts = MonNotifyPorts;
+    gMonitor.pfnNotifyUnusedPorts = MonNotifyPorts;
+    if (first)
+        LogLine(L"Monitor de puerto Factix cargado.");
+    if (phMonitor)
+        *phMonitor = (HANDLE)1;
+    return &gMonitor;
 }

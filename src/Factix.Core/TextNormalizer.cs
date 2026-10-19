@@ -22,6 +22,8 @@ namespace Factix
                 pages = XpsTextExtractor.Read(data);
             else if (EmfTextExtractor.IsEmf(data, 0, data.Length) || EmfTextExtractor.IsSpool(data))
                 pages = EmfTextExtractor.Read(data);
+            else if (StreamTextExtractor.TryRead(data, out var streamPages))
+                pages = streamPages;
             else
                 pages = ReadPlainText(data);
 

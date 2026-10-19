@@ -9,6 +9,8 @@ namespace Factix
         public const string PrinterName = "Factix";
         public const string ProcessorName = "factixpp";
         public const string ProcessorFileName = "factixpp.dll";
+        public const string MonitorName = "Factix Port";
+        public const string PortName = "Factix:";
 
         public static string JobsDirectory =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Factix", "jobs");
