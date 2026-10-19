@@ -530,7 +530,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
     return TRUE;
 }
 
-BOOL WINAPI EnumPrintProcessorDatatypesW(
+extern "C" BOOL WINAPI EnumPrintProcessorDatatypesW(
     LPWSTR pName,
     LPWSTR pPrintProcessorName,
     DWORD Level,
@@ -574,7 +574,7 @@ BOOL WINAPI EnumPrintProcessorDatatypesW(
     return TRUE;
 }
 
-HANDLE WINAPI OpenPrintProcessor(LPWSTR pPrinterName, PRINTPROCESSOROPENDATA* pPrintProcessorOpenData)
+extern "C" HANDLE WINAPI OpenPrintProcessor(LPWSTR pPrinterName, PRINTPROCESSOROPENDATA* pPrintProcessorOpenData)
 {
     PROCESSOR* processor;
     if (!pPrintProcessorOpenData)
@@ -598,7 +598,7 @@ HANDLE WINAPI OpenPrintProcessor(LPWSTR pPrinterName, PRINTPROCESSOROPENDATA* pP
     return processor;
 }
 
-BOOL WINAPI PrintDocumentOnPrintProcessor(HANDLE hPrintProcessor, LPWSTR pDocumentName)
+extern "C" BOOL WINAPI PrintDocumentOnPrintProcessor(HANDLE hPrintProcessor, LPWSTR pDocumentName)
 {
     PROCESSOR* processor = (PROCESSOR*)hPrintProcessor;
     UNREFERENCED_PARAMETER(pDocumentName);
@@ -610,7 +610,7 @@ BOOL WINAPI PrintDocumentOnPrintProcessor(HANDLE hPrintProcessor, LPWSTR pDocume
     return CaptureJob(processor);
 }
 
-BOOL WINAPI ClosePrintProcessor(HANDLE hPrintProcessor)
+extern "C" BOOL WINAPI ClosePrintProcessor(HANDLE hPrintProcessor)
 {
     PROCESSOR* processor = (PROCESSOR*)hPrintProcessor;
     if (!processor || processor->signature != kSignature)
@@ -623,7 +623,7 @@ BOOL WINAPI ClosePrintProcessor(HANDLE hPrintProcessor)
     return TRUE;
 }
 
-BOOL WINAPI ControlPrintProcessor(HANDLE hPrintProcessor, DWORD Command)
+extern "C" BOOL WINAPI ControlPrintProcessor(HANDLE hPrintProcessor, DWORD Command)
 {
     PROCESSOR* processor = (PROCESSOR*)hPrintProcessor;
     if (!processor || processor->signature != kSignature)
@@ -636,7 +636,7 @@ BOOL WINAPI ControlPrintProcessor(HANDLE hPrintProcessor, DWORD Command)
     return TRUE;
 }
 
-DWORD WINAPI GetPrintProcessorCapabilities(
+extern "C" DWORD WINAPI GetPrintProcessorCapabilities(
     LPWSTR pValueName,
     DWORD dwAttributes,
     LPBYTE pData,

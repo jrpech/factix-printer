@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.ServiceProcess;
@@ -17,18 +19,27 @@ namespace FactixSetup
         private const int PrinterAllAccess = 0x000F000C;
         private const int ServerAllAccess = 0x000F0003;
         private const uint PrinterAttributeLocal = 0x00000040;
+        private const string ProcessorRegPath = @"SYSTEM\CurrentControlSet\Control\Print\Environments\Windows x64\Print Processors\" + FactixPaths.ProcessorName;
 
         public static void Install()
         {
             Ensure64Bit();
             var source = FindProcessorDll();
-            RestartSpooler(delegate { CopyDll(source, ProcessorPath()); });
+            EnsureDllIs64Bit(source);
+            var destination = ProcessorPath();
+            RestartSpooler(delegate
+            {
+                CopyDll(source, destination);
+                RegisterProcessor();
+            });
+            EnsureProcessorRegistered();
             RemovePrinterIfPresent();
             var driver = ChooseInstalledDriver();
             EnsureNulPort();
             AddFactixPrinter(driver, PrinterDriverSelection.DatatypeFor(driver));
             EnsureJobsDirectory();
             Console.WriteLine("Impresora Factix instalada con el driver " + driver + ".");
+            Console.WriteLine("Procesador: " + destination);
             Console.WriteLine("Los trabajos se guardan en " + FactixPaths.JobsDirectory);
             Console.WriteLine("Para distribuir factixpp.dll, fírmala con Authenticode.");
         }
@@ -39,9 +50,13 @@ namespace FactixSetup
             RemovePrinterIfPresent();
             RestartSpooler(delegate
             {
+                UnregisterProcessor();
                 var path = ProcessorPath();
-                if (File.Exists(path))
-                    File.Delete(path);
+                using (new FileSystemNative())
+                {
+                    if (File.Exists(path))
+                        File.Delete(path);
+                }
             });
             Console.WriteLine("Impresora Factix quitada. Los trabajos en " + FactixPaths.JobsDirectory + " se conservan.");
         }
@@ -71,20 +86,83 @@ namespace FactixSetup
 
         private static string ProcessorPath()
         {
-            return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.System),
-                "spool",
-                "prtprocs",
-                "x64",
-                FactixPaths.ProcessorFileName);
+            var windows = Environment.GetEnvironmentVariable("SystemRoot");
+            if (string.IsNullOrEmpty(windows))
+                windows = @"C:\Windows";
+            return Path.Combine(windows, "System32", "spool", "prtprocs", "x64", FactixPaths.ProcessorFileName);
         }
 
         private static void CopyDll(string source, string destination)
         {
-            var directory = Path.GetDirectoryName(destination);
-            if (!string.IsNullOrEmpty(directory))
-                Directory.CreateDirectory(directory);
-            File.Copy(source, destination, true);
+            using (new FileSystemNative())
+            {
+                var directory = Path.GetDirectoryName(destination);
+                if (!string.IsNullOrEmpty(directory))
+                    Directory.CreateDirectory(directory);
+                File.Copy(source, destination, true);
+                if (!File.Exists(destination))
+                    throw new IOException("No se pudo copiar el procesador en " + destination + ".");
+            }
+        }
+
+        private static void EnsureDllIs64Bit(string path)
+        {
+            using (var stream = File.OpenRead(path))
+            using (var reader = new BinaryReader(stream))
+            {
+                if (reader.ReadUInt16() != 0x5A4D)
+                    throw new InvalidDataException("factixpp.dll no es un ejecutable de Windows.");
+                stream.Position = 0x3C;
+                var peOffset = reader.ReadInt32();
+                stream.Position = peOffset;
+                if (reader.ReadUInt32() != 0x00004550)
+                    throw new InvalidDataException("factixpp.dll no tiene cabecera PE.");
+                if (reader.ReadUInt16() != 0x8664)
+                    throw new InvalidDataException("factixpp.dll tiene que ser de 64 bits. Vuelve a compilarla con build.bat.");
+            }
+        }
+
+        private static void RegisterProcessor()
+        {
+            using (var key = Registry.LocalMachine.CreateSubKey(ProcessorRegPath))
+            {
+                if (key == null)
+                    throw new InvalidOperationException("No se pudo registrar el procesador de impresión.");
+                key.SetValue("Driver", FactixPaths.ProcessorFileName, RegistryValueKind.String);
+            }
+        }
+
+        private static void UnregisterProcessor()
+        {
+            try
+            {
+                Registry.LocalMachine.DeleteSubKeyTree(ProcessorRegPath, false);
+            }
+            catch (ArgumentException)
+            {
+            }
+        }
+
+        private static void EnsureProcessorRegistered()
+        {
+            for (var attempt = 0; attempt < 10; attempt++)
+            {
+                if (ListPrintProcessors().Any(name => string.Equals(name, FactixPaths.ProcessorName, StringComparison.OrdinalIgnoreCase)))
+                    return;
+                Thread.Sleep(500);
+            }
+
+            throw new InvalidOperationException(
+                "El servicio de impresión no reconoce el procesador " + FactixPaths.ProcessorName +
+                ". La DLL quedó en " + ProcessorPath() + ". Confirma que es de 64 bits y vuelve a instalar.");
+        }
+
+        private static List<string> ListPrintProcessors()
+        {
+            return ReadNameList(delegate(IntPtr buffer, uint size, out uint needed, out uint returned)
+            {
+                return EnumPrintProcessors(null, "Windows x64", 1, buffer, size, out needed, out returned);
+            });
         }
 
         private static void RestartSpooler(Action whileStopped)
@@ -141,16 +219,24 @@ namespace FactixSetup
 
         private static List<string> InstalledDrivers()
         {
+            return ReadNameList(delegate(IntPtr buffer, uint size, out uint needed, out uint returned)
+            {
+                return EnumPrinterDrivers(null, "Windows x64", 1, buffer, size, out needed, out returned);
+            });
+        }
+
+        private static List<string> ReadNameList(EnumNames enumerate)
+        {
             uint needed;
             uint returned;
-            EnumPrinterDrivers(null, "Windows x64", 1, IntPtr.Zero, 0, out needed, out returned);
+            enumerate(IntPtr.Zero, 0, out needed, out returned);
             if (needed == 0)
                 throw new Win32Exception(Marshal.GetLastWin32Error());
 
             var buffer = Marshal.AllocHGlobal((int)needed);
             try
             {
-                if (!EnumPrinterDrivers(null, "Windows x64", 1, buffer, needed, out needed, out returned))
+                if (!enumerate(buffer, needed, out needed, out returned))
                     throw new Win32Exception(Marshal.GetLastWin32Error());
 
                 var names = new List<string>();
@@ -271,8 +357,36 @@ namespace FactixSetup
         [DllImport("winspool.drv", EntryPoint = "AddPrinterW", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern IntPtr AddPrinter(string? pName, uint level, ref PrinterInfo2 printer);
 
+        private delegate bool EnumNames(IntPtr buffer, uint size, out uint needed, out uint returned);
+
         [DllImport("winspool.drv", EntryPoint = "EnumPrinterDriversW", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool EnumPrinterDrivers(string? pName, string pEnvironment, uint level, IntPtr pDriverInfo, uint cbBuf, out uint pcbNeeded, out uint pcReturned);
+
+        [DllImport("winspool.drv", EntryPoint = "EnumPrintProcessorsW", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool EnumPrintProcessors(string? pName, string pEnvironment, uint level, IntPtr pPrintProcessorInfo, uint cbBuf, out uint pcbNeeded, out uint pcReturned);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool Wow64DisableWow64FsRedirection(out IntPtr oldValue);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool Wow64RevertWow64FsRedirection(IntPtr oldValue);
+
+        private sealed class FileSystemNative : IDisposable
+        {
+            private readonly IntPtr _cookie;
+            private readonly bool _disabled;
+
+            public FileSystemNative()
+            {
+                _disabled = Wow64DisableWow64FsRedirection(out _cookie);
+            }
+
+            public void Dispose()
+            {
+                if (_disabled)
+                    Wow64RevertWow64FsRedirection(_cookie);
+            }
+        }
 
         [DllImport("winspool.drv", EntryPoint = "XcvDataW", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool XcvData(IntPtr hXcv, string pszDataName, IntPtr pInputData, uint cbInputData, IntPtr pOutputData, uint cbOutputData, out uint pcbOutputNeeded, out uint pdwStatus);

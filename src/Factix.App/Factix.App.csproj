@@ -7,6 +7,8 @@
     <Nullable>enable</Nullable>
     <RootNamespace>FactixPrinter</RootNamespace>
     <AssemblyName>Factix</AssemblyName>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
